@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 
 import { authOptions } from "@/lib/auth";
+import { createDefaultFactService } from "@/lib/fact-service";
 import { generateFunFact } from "@/lib/openai";
 import { prisma } from "@/lib/prisma";
 
@@ -23,9 +24,26 @@ export async function GET() {
     );
   }
 
-  let factText: string;
+  const factService = createDefaultFactService(generateFunFact);
+
   try {
-    factText = await generateFunFact(user.favoriteMovie);
+    const result = await factService.getOrGenerateFact({
+      userId: user.id,
+      movieTitle: user.favoriteMovie,
+    });
+
+    if (result.status === "in_progress") {
+      return NextResponse.json(
+        { error: result.message },
+        { status: 409 },
+      );
+    }
+
+    return NextResponse.json({
+      fact: result.fact,
+      createdAt: result.createdAt,
+      source: result.status,
+    });
   } catch (err) {
     console.error("OpenAI fact generation failed:", err);
 
@@ -67,24 +85,4 @@ export async function GET() {
       { status: 502 },
     );
   }
-
-  if (!factText) {
-    return NextResponse.json(
-      { error: "The AI returned an empty fact. Please try again." },
-      { status: 502 },
-    );
-  }
-
-  const fact = await prisma.fact.create({
-    data: {
-      userId: user.id,
-      movieTitle: user.favoriteMovie,
-      factText,
-    },
-  });
-
-  return NextResponse.json({
-    fact: fact.factText,
-    createdAt: fact.createdAt.toISOString(),
-  });
 }

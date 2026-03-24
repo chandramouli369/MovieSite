@@ -17,10 +17,11 @@ model AppUser {
   email          String   @unique
   name           String?
   image          String?
-  favoriteMovie String?  @db.VarChar(200)
+  favoriteMovie  String?  @db.VarChar(200)
   createdAt      DateTime @default(now())
 
-  facts Fact[]
+  facts            Fact[]
+  generationLocks  FactGenerationLock[]
 }
 
 model Fact {
@@ -33,4 +34,14 @@ model Fact {
 
   @@index([userId, createdAt])
   @@index([userId, movieTitle, createdAt])
+}
+
+model FactGenerationLock {
+  userId     String
+  movieTitle String   @db.VarChar(200)
+  lockedAt   DateTime @default(now())
+  user       AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, movieTitle])
+  @@index([lockedAt])
 }
