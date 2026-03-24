@@ -1,36 +1,153 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Movie Memory
 
-## Getting Started
+Small full-stack app: sign in with Google, save a favorite movie, then generate short “fun facts” via OpenAI. Facts are stored in Postgres. This repo implements the **base requirements** plus **Variant A** (backend caching, burst protection, and safe failure handling around fact generation).
 
-First, run the development server:
+**Repository:** https://github.com/chandramouli369/MovieSite
+
+## Stack
+
+- **Runtime / framework:** Node.js, Next.js 16 (App Router), React 19, TypeScript  
+- **UI:** Tailwind CSS  
+- **Auth:** NextAuth.js with Google OAuth (JWT sessions)  
+- **Database:** PostgreSQL via Prisma 7  
+- **DB driver:** `@prisma/adapter-pg` + `pg` (required for Prisma 7 in this setup)  
+- **LLM:** OpenAI (`gpt-4o-mini` by default)  
+- **Tests:** Vitest (`npm run test`)
+
+## Prerequisites
+
+- **Node.js** 20+ recommended (matches dev tooling in this project)  
+- A **PostgreSQL** database reachable from your machine (local install or hosted, e.g. Neon)  
+- **Google Cloud** OAuth client (Web application)  
+- **OpenAI** API key with quota / billing as required by your account  
+
+## Setup
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone https://github.com/chandramouli369/MovieSite.git
+cd MovieSite
+cp .env.example .env
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Fill in `.env` (see below). Then:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm install
+npx prisma migrate dev
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Open [http://localhost:3000](http://localhost:3000).
 
-## Learn More
+`postinstall` runs `prisma generate` so the generated client is created after `npm install` even though generated output is gitignored.
 
-To learn more about Next.js, take a look at the following resources:
+## Environment variables
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `DATABASE_URL` | Yes | Postgres connection string (include `sslmode=require` for Neon and most cloud providers). |
+| `NEXTAUTH_URL` | Yes | Public origin of the app, e.g. `http://localhost:3000` locally or your production URL. |
+| `NEXTAUTH_SECRET` | Yes | Random secret for signing session cookies. Generate with e.g. `openssl rand -base64 32`. |
+| `GOOGLE_CLIENT_ID` | Yes | Google OAuth 2.0 Web client ID. |
+| `GOOGLE_CLIENT_SECRET` | Yes | Google OAuth client secret. |
+| `OPENAI_API_KEY` | Yes | OpenAI API key (`sk-...`). |
+| `OPENAI_MODEL` | No | Overrides default `gpt-4o-mini`. |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+**Google OAuth:** In Google Cloud Console → APIs & Services → Credentials → your OAuth client, set:
 
-## Deploy on Vercel
+- **Authorized JavaScript origins:** `http://localhost:3000` (and your production origin if deployed)  
+- **Authorized redirect URIs:** `http://localhost:3000/api/auth/callback/google` (and production equivalent)  
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+`NEXTAUTH_URL` must match how you open the app (including `localhost` vs `127.0.0.1`).
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Never commit `.env`. This repo ignores `.env*` via `.gitignore`.
+
+## Database migrations
+
+**Local / development** (creates or updates the DB from migrations in `prisma/migrations/`):
+
+```bash
+npx prisma migrate dev
+```
+
+**Production / CI** (apply existing migrations only, non-interactive):
+
+```bash
+npx prisma migrate deploy
+```
+
+After schema changes, create a new migration with `migrate dev` and commit the new folder under `prisma/migrations/`.
+
+## Scripts
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Next.js dev server |
+| `npm run build` | Production build |
+| `npm run start` | Run production server (after `build`) |
+| `npm run lint` | ESLint |
+| `npm run test` | Vitest (Variant A unit tests for fact logic) |
+
+## Architecture (overview)
+
+### User flow
+
+1. **`/`** — Landing with “Sign in with Google”. If already signed in, the app calls `GET /api/me` and sends the user to **`/onboarding`** if `favoriteMovie` is empty, else **`/dashboard`**.  
+2. **`/onboarding`** — First-time users submit a favorite movie; **`PUT /api/me/movie`** validates (trim + length) and upserts `AppUser`.  
+3. **`/dashboard`** — Shows Google profile fields (with fallbacks), favorite movie, logout, and “Get a fun fact” which calls **`GET /api/fact`**.  
+4. Unauthenticated visits to **`/dashboard`** or **`/onboarding`** redirect to **`/`**.
+
+### Auth
+
+- NextAuth route: `src/app/api/auth/[...nextauth]/route.ts`  
+- Config: `src/lib/auth.ts` — Google provider, JWT strategy, `jwt` + `session` callbacks so email / name / picture flow into the session.
+
+### API routes
+
+- **`GET /api/me`** — Session required; upserts `AppUser` from Google email and returns profile + `favoriteMovie`.  
+- **`PUT /api/me/movie`** — Session required; body `{ favoriteMovie }` validated with Zod.  
+- **`GET /api/fact`** — Session required; uses **Variant A** fact service (see below). Response JSON includes `fact`, `createdAt`, and `source` (`cached` | `generated` | `stale_fallback`). Concurrent generation may return **409** with a short retry message.
+
+### Data model (Prisma)
+
+- **`AppUser`** — `email` (unique), optional `name` / `image`, optional `favoriteMovie` (VARCHAR 200).  
+- **`Fact`** — One row per generated fact: `userId`, `movieTitle` (snapshot at generation time), `factText`, `createdAt`. Indexed by user + recency and user + movie + recency.  
+- **`FactGenerationLock`** — Composite primary key `(userId, movieTitle)` used as a short-lived mutex so overlapping requests don’t all call OpenAI at once.
+
+### Variant A — fact generation (`src/lib/fact-service.ts`)
+
+- **60-second cache:** If the latest `Fact` for that user + movie is newer than 60s, return it without calling OpenAI.  
+- **Burst / idempotency:** Try to insert a row in `FactGenerationLock` for that user + movie. If another request holds the lock, wait briefly for a fresh fact; if still blocked, respond with 409. Stale locks (>45s) can be cleared and retried once.  
+- **OpenAI failure:** If the API throws and an older fact exists for that user + movie, return that fact with `source: stale_fallback`. If there is no prior fact, return an error.
+
+### Prisma client location
+
+Generated client is written to `src/generated/prisma` (see `schema.prisma` generator block). That folder is gitignored; `npm install` / `prisma generate` recreates it.
+
+## Variant choice: **A** (backend-focused)
+
+**Why A:** The brief’s Variant A lines up with how I wanted to harden the fact feature: correct behavior under refresh and multiple tabs, predictable cost/latency within a time window, and a defined story when OpenAI is down. Variant B is strong for API contracts and optimistic UI, but I prioritized server-side correctness and caching semantics first.
+
+## Tradeoffs
+
+- **Lock table vs other guards:** A dedicated `FactGenerationLock` row is simple and works across server instances that share Postgres; it adds one table and a couple of round-trips. An in-memory lock would be wrong for serverless multi-instance deploys.  
+- **JWT sessions:** No `Session` table in Prisma; user rows are keyed by Google email. Simpler, but account linking across providers is out of scope.  
+- **Movie snapshot on `Fact`:** Each fact stores the `movieTitle` string at generation time so history stays meaningful if the user ever changes their favorite movie later.  
+- **Gitignored Prisma output:** Cloners must run `npm install` (or `prisma generate`) before `npm run build`; `postinstall` handles the common case.
+
+## If I had ~2 more hours
+
+- Add **`GET /api/fact/latest`** (or extend `GET /api/fact` with a query flag) so the dashboard can show the last fact without implying a new generation.  
+- Tighten **409** handling in the UI (auto-retry once with backoff).  
+- Add a **small integration test** against a test DB or containerized Postgres for the lock + migration path.  
+- **README video** walkthrough and a one-click **deploy** note (Vercel env vars + `migrate deploy`).
+
+## AI / tooling usage (honest notes)
+
+- Used an AI-assisted editor to scaffold the Next.js app, iterate on Prisma/NextAuth wiring, and implement Variant A (fact service, route wiring, tests).  
+- Used official docs for Prisma 7 adapter setup, NextAuth App Router patterns, and OpenAI SDK usage.  
+- All run instructions, env var names, and architecture descriptions above were written to match what is actually in this repository.
+
+## License
+
+Private / assessment use unless you add a license.
