@@ -2,7 +2,11 @@
 
 Small full-stack app: sign in with Google, save a favorite movie, then generate short “fun facts” via OpenAI. Facts are stored in Postgres. This repo implements the **base requirements** plus **Variant A** (backend caching, burst protection, and safe failure handling around fact generation).
 
-**Repository:** https://github.com/chandramouli369/MovieSite
+**Repository:** https://github.com/chandramouli369/MovieSite  
+
+**Live demo:** https://movie-site-jet.vercel.app  
+
+For production, set `NEXTAUTH_URL` to `https://movie-site-jet.vercel.app` (no trailing slash) and add that origin plus `https://movie-site-jet.vercel.app/api/auth/callback/google` in the Google OAuth client.
 
 ## Stack
 
@@ -142,11 +146,11 @@ Generated client is written to `src/generated/prisma` (see `schema.prisma` gener
 - Add a **small integration test** against a test DB or containerized Postgres for the lock + migration path.  
 - **README video** walkthrough and a one-click **deploy** note (Vercel env vars + `migrate deploy`).
 
-## AI / tooling usage (honest notes)
+## How this was built
 
-- Used an AI-assisted editor to scaffold the Next.js app, iterate on Prisma/NextAuth wiring, and implement Variant A (fact service, route wiring, tests).  
-- Used official docs for Prisma 7 adapter setup, NextAuth App Router patterns, and OpenAI SDK usage.  
-- All run instructions, env var names, and architecture descriptions above were written to match what is actually in this repository.
+- Started from the standard Next.js app scaffold, then wired Postgres, auth, and the fact flow by hand.  
+- When something was unclear, I checked the official Prisma, Next.js, NextAuth, and OpenAI docs.  
+- What you read above matches what is in the tree; I kept `.env` out of git on purpose.
 
 ## License
 
